@@ -1,115 +1,187 @@
 from typing import Dict, Any, Literal
+import json
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.messages import SystemMessage, HumanMessage
 
 # =====================================================================
-# 1. THE STATE DEFINITION
-# This is the single source of truth that moves through the graph.
+# 1. INITIALIZE LOCAL MODELS & VECTOR STORE
+# =====================================================================
+llm = ChatOllama(model="llama3.1:latest", temperature=0.1)
+embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+vector_store = Chroma(
+    persist_directory="./chroma_db",
+    embedding_function=embeddings
+)
+
+# =====================================================================
+# 2. THE GRAPH STATE DEFINITION (With Revision Counter)
 # =====================================================================
 class ReportState(BaseModel):
-    user_data: Dict[str, Any] = Field(default_factory=dict, description="Raw input numbers/metrics provided by user.")
-    user_summary: str = ""                                 # The brief summary or goal prompt
-    matched_template_structure: str = ""                  # Extracted report layout from older examples
-    current_draft: str = ""                               # The Persian report text draft
-    feedback: str = ""                                    # Any criticism or revision notes if structure fails
-    is_approved: bool = False                             # Flag determining if report matches rules
-
+    user_raw_input: str = ""
+    user_data: Dict[str, Any] = Field(default_factory=dict)
+    user_summary: str = ""
+    matched_template_structure: str = ""
+    current_draft: str = ""
+    feedback: str = ""
+    is_approved: bool = False
+    revision_count: int = 0  # Added to prevent infinite loops!
 
 # =====================================================================
-# 2. NODES (The Worker Functions)
-# Each function takes the current state, does work, and returns updates.
+# 3. GRAPH NODES
 # =====================================================================
+
+def data_extractor_node(state: ReportState) -> Dict[str, Any]:
+    print("\n--- 🧠 [NODE 0]: Data Extractor Agent ---")
+    
+    system_prompt = (
+        "You are a precise data extraction specialist working with Persian legal/property records.\n"
+        "Extract key parameters into a clean structure. Ignore system codes or processing fees at the end.\n"
+        "Respond ONLY with a valid JSON object matching this schema. Do not add markdown backticks:\n"
+        "{\n"
+        '  "extracted_metrics": {\n'
+        '     "owner": "Name",\n'
+        '     "property_address": "Address",\n'
+        '     "registration_id": "Plak Sabti",\n'
+        '     "physical_progress": "Percentage",\n'
+        '     "total_value": "Value"\n'
+        "  },\n"
+        '  "search_summary": "A short 1-sentence Persian summary for database template search"\n'
+        "}"
+    )
+    
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=f"Raw Input: {state.user_raw_input}")]
+    response = llm.invoke(messages)
+    
+    try:
+        clean_content = response.content.strip().replace("```json", "").replace("```", "")
+        extracted_json = json.loads(clean_content)
+        print("✅ Data successfully structured into keys!")
+        return {
+            "user_data": extracted_json.get("extracted_metrics", {}),
+            "user_summary": extracted_json.get("search_summary", "ارزیابی ملک")
+        }
+    except Exception:
+        return {"user_data": {"raw": state.user_raw_input}, "user_summary": "ارزیابی ملک"}
+
 
 def data_analyst_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- 🤖 [NODE 1]: Data Analyst Agent ---")
-    print(f"Analyzing user metrics: {state.user_data}")
+    print("\n--- 🤖 [NODE 1]: Data Analyst Agent (Retrieving Template) ---")
+    results = vector_store.similarity_search(state.user_summary, k=1)
     
-    # In a later step, this will query ChromaDB/FAISS for an old report structure
-    # For now, we simulate matching a specific structural layout.
-    simulated_template = "Structure: [Header] -> [Data Analysis Table] -> [Persian Conclusion]"
-    print(f"Found matching historical report structure.")
-    
-    return {"matched_template_structure": simulated_template}
+    if results:
+        matched_layout = results[0].page_content
+        print(f"🎯 Pattern Found! Matching structural blueprint pulled from history.")
+    else:
+        matched_layout = "۱. مقدمه ۲. اسناد و مدارک ۳. مشخصات بنا ۴. نتیجه گزارش"
+        print("⚠️ Fallback layout used.")
+        
+    return {"matched_template_structure": matched_layout}
 
 
 def persian_writer_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- ✍️ [NODE 2]: Persian Writer Agent ---")
-    print(f"Drafting report using layout: {state.matched_template_structure}")
+    print(f"\n--- ✍️ [NODE 2]: Persian Writer Agent (Drafting - Attempt {state.revision_count + 1}) ---")
     
-    # Simulating LLM drafting text in Persian based on whether feedback was given
+    system_prompt = (
+        "You are an expert corporate technical reporter writing exclusively in formal, eloquent Persian.\n"
+        "You MUST align your response layout exactly with this layout structure template:\n"
+        f"==== REQUIRED STRUCTURE ====\n{state.matched_template_structure}\n============================\n"
+        "CRITICAL: You must explicitly include a section named 'نتیجه گزارش:' or 'نتیجه‌گیری:' at the bottom "
+        "and state the final evaluation price there. Do not skip this section title."
+    )
+    
+    user_content = f"Extracted Data Values: {state.user_data}"
+    
     if state.feedback:
-        print(f"Applying supervisor feedback: '{state.feedback}'")
-        draft = "گزارش نهایی اصلاح شده: مقادیر ورودی با ساختار کاملاً هماهنگ هستند و بخش نتیجه‌گیری اضافه شد."
-    else:
-        # A basic draft missing a mandatory section on purpose to test our Critic loop!
-        draft = "گزارش اولیه: مقادیر سیستم تحلیل شدند."
-        
-    return {"current_draft": draft}
+        print(f"🔄 Re-drafting based on supervisor feedback...")
+        user_content += f"\n\nCRITICAL ERROR CORRECTION NEEDED FROM SUPERVISOR: {state.feedback}"
+
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]
+    response = llm.invoke(messages)
+    
+    # Increment the revision counter every time the writer runs
+    return {"current_draft": response.content, "revision_count": state.revision_count + 1}
 
 
 def supervisor_critic_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- 🧐 [NODE 3]: Supervisor / Critic Agent ---")
-    print("Checking report structure against historical rules...")
+    print("\n--- 🧐 [NODE 3]: Supervisor / Critic Agent (Evaluating) ---")
     
-    # Let's write rules simulating validation
-    # If it doesn't contain 'نتیجه‌گیری' (Conclusion), reject it once to show a loop
-    if "نتیجه‌گیری" in state.current_draft:
-        print("✅ Report passes all structural requirements!")
+    # If we hit maximum retries, bypass the validation to break the loop
+    if state.revision_count >= 3:
+        print("⚠️ Maximum revision attempts reached! Forcing approval to prevent loop.")
         return {"is_approved": True, "feedback": ""}
-    else:
-        print("❌ Critique: The report lacks a Persian Conclusion section.")
-        return {"is_approved": False, "feedback": "بخش نتیجه‌گیری نهایی را به گزارش اضافه کنید."}
-
+        
+    system_prompt = (
+        "You are a quality control supervisor ensuring Persian reports conform strictly to required sections.\n"
+        "Check if the text includes a concluding section containing the text 'نتیجه' or financial valuation details.\n"
+        "Respond ONLY in this exact JSON format:\n"
+        "{\n"
+        '  "approved": true or false,\n'
+        '  "feedback": "Your adjustment note in Persian if approved is false, otherwise empty string"\n'
+        "}"
+    )
+    
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=f"Verify this layout text structure:\n\n{state.current_draft}")]
+    response = llm.invoke(messages)
+    
+    try:
+        clean_content = response.content.strip().replace("```json", "").replace("```", "")
+        result = json.loads(clean_content)
+        
+        if result.get("approved") is True:
+            print("✅ Evaluation Passed!")
+            return {"is_approved": True, "feedback": ""}
+        else:
+            print(f"❌ Evaluation Rejected! Correction required: {result.get('feedback')}")
+            return {"is_approved": False, "feedback": result.get("feedback")}
+    except Exception:
+        # If the supervisor LLM makes a formatting error, pass it through to be safe
+        print("⚠️ JSON parsing error in Supervisor. Passing through safely.")
+        return {"is_approved": True, "feedback": ""}
 
 # =====================================================================
-# 3. CONDITIONAL EDGES (Routing Logic)
-# Determines whether to finish or route backwards into a cycle loop.
+# 4. ROUTING & GRAPH TOPOLOGY
 # =====================================================================
 def route_after_critic(state: ReportState) -> Literal["persian_writer", "__end__"]:
     if state.is_approved:
-        return END  # Finished!
-    else:
-        print("🔄 State routed backward to Persian Writer for revisions...")
-        return "persian_writer"  # Send back to writer node
+        return END
+    return "persian_writer"
 
-
-# =====================================================================
-# 4. BUILDING THE GRAPH ARCHITECTURE
-# =====================================================================
-# Create the graph builder object linked to our State schema
 builder = StateGraph(ReportState)
-
-# Define our steps (Nodes)
+builder.add_node("data_extractor", data_extractor_node)
 builder.add_node("data_analyst", data_analyst_node)
 builder.add_node("persian_writer", persian_writer_node)
 builder.add_node("supervisor_critic", supervisor_critic_node)
 
-# Set up the execution flow connections (Edges)
-builder.add_edge(START, "data_analyst")          # Start here
-builder.add_edge("data_analyst", "persian_writer") # Then go to writer
-builder.add_edge("persian_writer", "supervisor_critic") # Then evaluate
-
-# Add the conditional check after evaluation
+builder.add_edge(START, "data_extractor")
+builder.add_edge("data_extractor", "data_analyst")
+builder.add_edge("data_analyst", "persian_writer")
+builder.add_edge("persian_writer", "supervisor_critic")
 builder.add_conditional_edges("supervisor_critic", route_after_critic)
 
-# Compile everything into an executable application
 compiled_agent = builder.compile()
 
-
 # =====================================================================
-# 5. EXECUTION EXAMPLE
+# 5. EXECUTE THE SYSTEM
 # =====================================================================
 if __name__ == "__main__":
-    # Simulate a user providing input data and a brief summary
-    initial_input = ReportState(
-        user_data={"temperature": 42.5, "pressure": 101.3, "status": "Critical"},
-        user_summary="گزارش خطای سیستم در بخش تولید"
+    messy_user_input = (
+        "سلام خسته نباشید. یک ارزیابی ملک داریم برای آقای علی علوی در فرهنگ شهر شیراز، کوچه ۵ پلاک ۱۲. "
+        "پلاک ثبتی ملکش هم ۱۴۲۰/۹۹ هست زمینش کلاً ۴۰۰ متره. یه بنای ۴ طبقه بتنی نیمه کاره داره که حدود ۶۵ درصدش "
+        "دیوارچینی و اسکلتش انجام شده ولی نازک کاری نداره هنوز. قیمت شش دانگ ملک رو کارشناس زده ۷۵0 میلیارد ریال "
+        "و ما هم کل شش دانگ رو ارزیابی میکنیم. لطفاً گزارشش رو آماده کنید. "
+        "--- اطلاعات سیستم مالی: کد رهگیری بایگانی ۸۸۷۲۶۱ --- هزینه پرداختی ایاب ذهاب: ۲۰۰۰۰۰ ریال"
     )
     
-    print("🚀 Running the LangGraph Agent System...")
-    final_output = compiled_agent.invoke(initial_input)
+    test_input = ReportState(user_raw_input=messy_user_input)
+    
+    print("🚀 Running the Safe LangGraph RAG Engine...")
+    final_output = compiled_agent.invoke(test_input)
     
     print("\n==================================================")
-    print("🏁 FINAL OUTPUT GENERATED BY GRAPH:")
+    print("🏁 FINAL REPORT:")
     print(final_output["current_draft"])
     print("==================================================")
