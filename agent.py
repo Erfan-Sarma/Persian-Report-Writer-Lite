@@ -72,35 +72,32 @@ def intro_writer_node(state: ReportState) -> Dict[str, Any]:
     print("\n--- ✍️ [Node 2-A]: Specialized Intro Writer Node ---")
     
     system_prompt = (
-        "You are an expert legal report editor for the Iranian judiciary system.\n"
-        "Your sole task is to extract and write the 'Introduction and Case Background' section "
-        "of a court expert report.\n"
-        "CRITICAL INSTRUCTIONS:\n"
-        "1. Write exclusively in highly formal, prestigious, and bureaucratic Persian (ادبیات رسمی دادگستری).\n"
-        "2. Extract and accurately preserve all case metadata: Court Name, Branch Number, Notification/Case ID, "
-        "Dates, Plaintiff/Defendant names, and the exact property address.\n"
-        "3. Do NOT include property specifications, metrics, asset calculations, or final financial valuations here."
+        "You are an expert legal scribe for the Iranian judiciary. "
+        "Your ONLY job is to write the introductory paragraph of the court report.\n\n"
+        "STRICT RULES:\n"
+        "1. NO CONVERSATIONAL FILLER. Do not say 'Here is the intro' or 'Please note'. Start immediately with 'ریاست محترم...'.\n"
+        "2. NO MARKDOWN. Do not use bolding (**), bullet points, or headers.\n"
+        "3. Write a single, continuous, formal Persian paragraph.\n"
+        "4. Include ONLY the court name, date, notification number, plaintiff/defendant names, and property address."
     )
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
     response = llm.invoke(messages)
-    return {"intro_section": response.content.strip()}
+    
+    # Programmatically strip any residual conversational filler just in case
+    clean_text = response.content.replace("لطفا توجه داشته باشید", "").strip()
+    return {"intro_section": clean_text}
 
 
 def documents_writer_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- ✍️ [Node 2-B]: Specialized Legal Documents & Titles Writer Node ---")
+    print("\n--- ✍️ [Node 2-B]: Specialized Legal Documents Writer Node ---")
     
     system_prompt = (
-        "You are an expert asset validation agent for the court.\n"
-        "Your sole task is to compile the 'Documents and Evidence' (اسناد و مدارک) section of the report.\n"
-        "CRITICAL INSTRUCTIONS:\n"
-        "1. Write exclusively in highly formal, structured Persian.\n"
-        "2. Extract every single legal identifier: Single-page title deed numbers (سند تک‌برگ), "
-        "printing serials, main/sub-registry plot numbers (پلاک اصلی و فرعی), registration sectors, "
-        "postal codes, or historical probate certification numbers (گواهی انحصار وراثت) from dispute resolutions.\n"
-        "3. If the input specifies that the property lacks standard registry documents or construction permits, "
-        "detail that exact status explicitly with legal terminology (فاقد سند رسمی ثبتی و فاقد پروانه ساختمانی).\n"
-        "4. Do NOT drop any document serial numbers or registration IDs."
+        "You are an expert legal scribe. Write the 'اسناد و مدارک' (Documents) section of the report.\n\n"
+        "STRICT RULES:\n"
+        "1. NO CONVERSATIONAL FILLER. Output ONLY the formal text.\n"
+        "2. NO MARKDOWN. Do not use bolding (**), lists (-), or headers. Write in continuous, formal prose (e.g., 'به موجب اصل سند تک برگی...').\n"
+        "3. DO NOT hallucinate. Only use the deed numbers, plot IDs, and postal codes provided in the raw text."
     )
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
@@ -109,19 +106,14 @@ def documents_writer_node(state: ReportState) -> Dict[str, Any]:
 
 
 def property_specs_writer_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- ✍️ [Node 2-C]: Specialized Structural & Technical Specs Node ---")
+    print("\n--- ✍️ [Node 2-C]: Specialized Structural Specs Node ---")
     
     system_prompt = (
-        "You are a Senior Structural Engineer and Court Valuation Expert.\n"
-        "Your sole task is to generate the 'Property Specifications & Technical Details' (مشخصات ساختمان) section.\n"
-        "CRITICAL INSTRUCTIONS:\n"
-        "1. Write in highly detailed, professional engineering/real-estate Persian.\n"
-        "2. Extract and layout EVERY single physical specification: Structural skeleton frame type (concrete, masonry, ties), "
-        "roofing style (joist & foam/block), number of stories, exact land area (عرصه), exact floor-by-floor infrastructure "
-        "built-up areas (اعیانی), staircase setups, balconies with their exact individual square footage, and commercial storefront dimensions.\n"
-        "3. Include interior finishes (plaster work, mosaic floorings, tile height measurements, kitchen cabinetry status), "
-        "utility connections, exterior facade descriptions, and current occupancy or possessory statuses of each unit.\n"
-        "4. WARNING: Do NOT summarize. Every square meter, balcony metric, or material mention from the source data must be retained."
+        "You are a strict structural engineering scribe. Write the 'مشخصات ساختمان' (Building Specs) section.\n\n"
+        "STRICT RULES:\n"
+        "1. NO CONVERSATIONAL FILLER. NO MARKDOWN. NO BULLET POINTS. NO NUMBERED LISTS.\n"
+        "2. Write exactly like a formal Iranian court report: a dense, continuous paragraph detailing the skeleton, floors, materials, and units.\n"
+        "3. Include every single physical metric from the raw text without summarizing."
     )
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
@@ -130,20 +122,16 @@ def property_specs_writer_node(state: ReportState) -> Dict[str, Any]:
 
 
 def valuation_writer_node(state: ReportState) -> Dict[str, Any]:
-    print("\n--- ✍️ [Node 2-D]: Specialized Financial Valuation & Summary Node ---")
+    print("\n--- ✍️ [Node 2-D]: Specialized Financial Valuation Node ---")
     
     system_prompt = (
-        "You are a Court Forensic Financial Valuator.\n"
-        "Your sole task is to generate the 'Final Conclusion and Financial Evaluation' (نتیجه گزارش و ارزیابی مالی) section.\n"
-        "CRITICAL INSTRUCTIONS:\n"
-        "1. Write in precise, ironclad legal-financial Persian.\n"
-        "2. Break down all expert evaluations individually: Land value (ارزش عرصه), base floor building value, "
-        "upper floor values, and separate residential units.\n"
-        "3. Present the total combined valuation clearly in both numeric Rial format and written out text (both in Rial and Toman if necessary).\n"
-        "4. If inheritance shares are present, output a structured list mapping each heir to their precise fraction/percentage "
-        "based on the source information.\n"
-        "5. Conclude with standard legal disclaimers protecting the appraisal against external debts, mortgages, or registry claims "
-        "(صرف‌نظر از هرگونه بدهی، دیون، معارض و سوابق ثبتی)."
+        "You are a strict court financial valuator. Write the 'نتیجه گزارش' (Final Evaluation) section.\n\n"
+        "CRITICAL ANTI-HALLUCINATION RULES:\n"
+        "1. DO NOT INVENT MATH. If a per-square-meter breakdown is not explicitly provided in the raw text, DO NOT make one up. Only output the total values given.\n"
+        "2. DO NOT INVENT HEIRS. Only list an inheritance breakdown if explicitly requested in the raw text. Do not confuse plaintiffs with heirs.\n"
+        "3. NO CONVERSATIONAL FILLER. NO MARKDOWN TABLES. NO BOLDING (**).\n"
+        "4. Write in a continuous, highly formal legal paragraph ending with 'تعیین و اعلام می‌گردد.'\n"
+        "5. Include the standard legal disclaimer: 'صرف نظر از اصالت، صحت و سقم اسناد و مدارک و صرف نظر از سوابق ثبتی و بدون در نظر گرفتن تعهدات و دیونی که ممکن است به افراد حقیقی و حقوقی وجود داشته باشد...'"
     )
     
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
