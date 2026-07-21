@@ -3,15 +3,30 @@ import os
 from typing import Dict, Any, Literal
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
-from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.output_parsers import StrOutputParser  # <-- NEW IMPORT
+
+from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import OllamaEmbeddings
 
 # =====================================================================
 # 1. INITIALIZATION 
 # =====================================================================
-# Temperature set to 0.0 to force absolute strictness
-llm = ChatOllama(model="llama3.1:latest", temperature=0.0)
+load_dotenv()
+
+# Initialize Gemini Model
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite",  
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    temperature=0.2,            
+)
+
+# <-- THE FIX: This forces the Gemini output to ALWAYS be a flat string
+text_llm = llm | StrOutputParser()
+
+# (Assuming you still use Ollama for your local ChromaDB embeddings)
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 vector_store = Chroma(
@@ -49,16 +64,17 @@ def data_analyzer_node(state: ReportState) -> Dict[str, Any]:
         SystemMessage(content="Generate a 3-word Persian search query based on the input text. ONLY output the 3 words."),
         HumanMessage(content=state.user_raw_input)
     ]
-    search_query = llm.invoke(messages).content.strip()
+    
+    # Using text_llm. We no longer need .content because StrOutputParser handles it!
+    search_query = text_llm.invoke(messages).strip()
     
     results = vector_store.similarity_search(search_query, k=1)
     matched_layout = results[0].page_content if results else "No DB Match Found."
     
-    # VISUAL VERIFICATION FOR THE USER: See exactly what the database is doing!
     print("\n=======================================================")
     print(f"🔍 [RAG DATABASE FETCH] Based on query: '{search_query}'")
     print("Here is a snippet of what ChromaDB pulled from your DOCX files:")
-    print(f"   -> \"{matched_layout}\"")
+    print(f"   -> \"{matched_layout[:200]}...\"")
     print("=======================================================\n")
     
     return {"extracted_keywords": search_query, "matched_template_layout": matched_layout}
@@ -76,7 +92,7 @@ def intro_writer_node(state: ReportState) -> Dict[str, Any]:
         "4. FATAL ERROR: Do NOT mention any money, measurements, or physical building specs. If you do, the report is invalid."
     )
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
-    return {"intro_section": llm.invoke(messages).content.strip()}
+    return {"intro_section": text_llm.invoke(messages).strip()}
 
 
 def documents_writer_node(state: ReportState) -> Dict[str, Any]:
@@ -90,7 +106,7 @@ def documents_writer_node(state: ReportState) -> Dict[str, Any]:
         "3. FATAL ERROR: You are strictly FORBIDDEN from mentioning physical building materials, skeletons, or financial values (ریال/تومان)."
     )
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
-    return {"documents_section": llm.invoke(messages).content.strip()}
+    return {"documents_section": text_llm.invoke(messages).strip()}
 
 
 def property_specs_writer_node(state: ReportState) -> Dict[str, Any]:
@@ -103,13 +119,12 @@ def property_specs_writer_node(state: ReportState) -> Dict[str, Any]:
         "2. FATAL ERROR: Do NOT mention court names, plaintiff/defendant names, or financial valuations (ریال/تومان)."
     )
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
-    return {"property_specs_section": llm.invoke(messages).content.strip()}
+    return {"property_specs_section": text_llm.invoke(messages).strip()}
 
 
 def valuation_writer_node(state: ReportState) -> Dict[str, Any]:
     print("--- ✍️ [Node 2-D]: Valuation Node (Boilerplate Injection) ---")
     
-    # Here we inject YOUR exact requested boilerplate!
     system_prompt = (
         "You are the Chief Financial Valuator. Write the final evaluation paragraph.\n"
         "You MUST use the exact structure and phrasing provided below, simply filling in the specific context and numbers from the user's prompt.\n\n"
@@ -118,13 +133,12 @@ def valuation_writer_node(state: ReportState) -> Dict[str, Any]:
         "ABSOLUTE RULE: Do not add any conversational filler. Output only the finalized paragraph based on the template."
     )
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=state.user_raw_input)]
-    return {"valuation_section": llm.invoke(messages).content.strip()}
+    return {"valuation_section": text_llm.invoke(messages).strip()}
 
 
 def report_compiler_node(state: ReportState) -> Dict[str, Any]:
     print("--- 🧩 [Node 3]: Compiler (Using User's Professional Layout) ---")
     
-    # Using your cleaner, professional layout
     compiled_text = (
         f"{state.intro_section}\n\n"
         f"اسناد و مدارک :\n"
@@ -139,7 +153,11 @@ def report_compiler_node(state: ReportState) -> Dict[str, Any]:
 
 def file_exporter_node(state: ReportState) -> Dict[str, Any]:
     print("\n--- 💾 [Node 4]: File Exporter Node ---")
-    output_filename = "generated_reprots/detailed_judicial_report.txt"
+    
+    output_dir = "generated_reports"
+    os.makedirs(output_dir, exist_ok=True) 
+    output_filename = os.path.join(output_dir, "detailed_judicial_report.txt")
+    
     try:
         with open(output_filename, "w", encoding="utf-8") as f:
             f.write(state.current_draft)
